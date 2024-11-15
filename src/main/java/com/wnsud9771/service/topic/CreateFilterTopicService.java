@@ -2,7 +2,6 @@ package com.wnsud9771.service.topic;
 
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -13,6 +12,7 @@ import org.apache.kafka.clients.admin.ListTopicsResult;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -23,6 +23,7 @@ import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Service;
 
 import com.wnsud9771.dto.FormatIdFilterIdDTO;
+import com.wnsud9771.dto.JsonDTO;
 import com.wnsud9771.mapper.FilterMapper;
 import com.wnsud9771.service.filtering.FilteringService;
 import com.wnsud9771.service.mybatis.MybatisService;
@@ -39,9 +40,11 @@ public class CreateFilterTopicService {
 	private final KafkaTemplate<String, String> kafkaTemplate;
 	private final AdminClient adminClient;
 	private final Map<String, ConcurrentMessageListenerContainer<String, String>> consumers = new ConcurrentHashMap<>();
-	private final FilteringService formatingService;
 	private final FilterMapper formatMapper;
 	private final MybatisService mybatisService;
+	private final FilteringService filteringService;
+	@Value("${ec2port}")
+	private String serverport;
 
 	//private static final String SOURCE_TOPIC = "tpic";
 	private static final String CAMPAIGN_TOPIC_PREFIX = "fail-";
@@ -49,17 +52,17 @@ public class CreateFilterTopicService {
 	// -----------------------------------( 함수들 호출 로직 )-----------------------------------------------------
 	public boolean createTopicAndSendLog(String campaignId, String filterId,String formatId) {
 		String newTopicName = formatId + filterId;
-		String failfilterTopicNmae =  CAMPAIGN_TOPIC_PREFIX + formatId + filterId;
+		//String failfilterTopicNmae =  CAMPAIGN_TOPIC_PREFIX + formatId + filterId;
 		try {
 			// 먼저 토픽 생성
 			if(!createTopicIfNotExists(newTopicName, filterId, formatId)) {
 				log.info("토픽 생성 실패: {}", newTopicName);
 				return false;
 			}
-			if(!createTopicIfNotExists(failfilterTopicNmae, filterId, formatId)) {
-				log.info("토픽 생성 실패: {}", failfilterTopicNmae);
-				return false;
-			}
+//			if(!createTopicIfNotExists(failfilterTopicNmae, filterId, formatId)) {
+//				log.info("토픽 생성 실패: {}", failfilterTopicNmae);
+//				return false;
+//			}
 			
 			log.info("{}: 새로운 포맷 토픽 생성 성공",newTopicName);
 			if(setupConsumer(campaignId, formatId, filterId)) {
@@ -134,17 +137,19 @@ public class CreateFilterTopicService {
 	        try {
 	            
 	            // 필터팅 처리
-	        	LogAndSuccessAndFailureDTO dto = filteringService.filterSuccessOrFail(record.value(), paths).getParsedLog();
+	        	JsonDTO  dto = filteringService.filterSuccessOrFail(record.value(), filterId);
+	        	
+	        	
 	            log.info("컨슈밍으로 받은 로그 ㅣ::::{}", record.value());
 	            
 	            // 비동기 전송 처리
-	            CompletableFuture<SendResult<String, String>> future = kafkaTemplate.send(targetTopic, parsinglog);
+	            CompletableFuture<SendResult<String, String>> future = kafkaTemplate.send(targetTopic, dto.getJsonlog());
 	            
 	            future.whenComplete((result, ex) -> {
 	                if (ex == null) {
 	                    // 전송 성공시에만 커밋
 	                    acknowledgment.acknowledge();
-	                    log.info("{} 토픽으로 {} 전송 성공", targetTopic, parsinglog);
+	                    log.info("{} 토픽으로 {} 전송 성공", targetTopic, dto.getJsonlog());
 	                } else {
 	                    log.error("Failed to send message to topic: {}", targetTopic, ex);
 	                    // 실패시 커밋하지 않음 - 메시지 재전송됨
@@ -172,7 +177,7 @@ public class CreateFilterTopicService {
 	// -----------------------------------------( 컨슈머 팩토리 설정 )---------------------------------------------------
 	private ConsumerFactory<String, String> createConsumerFactory(String groupId) {
 		Map<String, Object> props = new HashMap<>();
-		props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+		props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, serverport);
 		props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
 		props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
 		props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
